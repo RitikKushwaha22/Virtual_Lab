@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flower Wand Garden</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;font-family:system-ui,sans-serif;color:#fff}
+  #stage{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+  video,canvas{position:absolute;max-width:100%;max-height:100%;transform:scaleX(-1)} /* mirror */
+  #hud{position:absolute;bottom:18px;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:10px;z-index:5}
+  #hint{background:rgba(0,0,0,.55);padding:6px 14px;border-radius:99px;font-size:13px}
+  button{border:0;border-radius:99px;padding:10px 20px;font-size:14px;background:#ff7eb6;color:#fff;cursor:pointer}
+  #start{position:absolute;z-index:9;top:50%;left:50%;transform:translate(-50%,-50%);font-size:18px;padding:14px 28px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <button id="start">Start camera</button>
+  <div id="hud">
+    <div id="hint">Point with one finger to plant flowers. Open palm to scatter.</div>
+    <div><button id="photo">Photo</button> <button id="clear">Clear</button></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const hint = document.getElementById('hint');
+
+let flowers = [];
+let lastPlant = null;
+let scattered = false;
+
+// ---------- Flower drawing (procedural: apni images lagani ho to yahan badlo) ----------
+function drawFlower(f, alpha){
+  const grow = Math.min(1, (performance.now() - f.born) / 350);   // pop-in animation
+  const s = f.r * (1 - Math.pow(1 - grow, 3));
+  ctx.save();
+  ctx.translate(f.x, f.y);
+  ctx.rotate(f.rot);
+  ctx.globalAlpha = alpha;
+  for (let i = 0; i < f.petals; i++){
+    ctx.rotate((Math.PI * 2) / f.petals);
+    ctx.fillStyle = `hsl(${f.hue},85%,65%)`;
+    ctx.beginPath();
+    ctx.ellipse(0, -s * 0.6, s * 0.35, s * 0.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#ffd84d';
+  ctx.beginPath();
+  ctx.arc(0, 0, s * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function plant(x, y){
+  flowers.push({
+    x, y, vx: 0, vy: 0, falling: false, life: 1,
+    r: 10 + Math.random() * 12,
+    rot: Math.random() * 6.28,
+    hue: [330, 45, 280, 200, 10, 140][Math.floor(Math.random() * 6)],
+    petals: 5 + Math.floor(Math.random() * 3),
+    born: performance.now()
+  });
+  if (flowers.length > 500) flowers.shift();
+}
+
+function scatter(){
+  flowers.forEach(f => {
+    f.falling = true;
+    f.vx = (Math.random() - 0.5) * 10;
+    f.vy = -Math.random() * 8;
+  });
+}
+
+// ---------- Gesture detection ----------
+// MediaPipe landmarks: tip ids 8,12,16,20 | pip ids 6,10,14,18
+const up = (lm, tip, pip) => lm[tip].y < lm[pip].y;
+function getGesture(lm){
+  const i = up(lm, 8, 6), m = up(lm, 12, 10), r = up(lm, 16, 14), p = up(lm, 20, 18);
+  if (i && m && r && p) return 'open';
+  if (i && !m && !r && !p) return 'point';
+  return 'none';
+}
+
+// ---------- Main loop ----------
+function onResults(res){
+  if (canvas.width !== video.videoWidth){
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+  }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
+  let gesture = 'none';
+  if (lm){
+    gesture = getGesture(lm);
+    const tip = lm[8];
+    const x = tip.x * canvas.width, y = tip.y * canvas.height;
+
+    if (gesture === 'point'){
+      scattered = false;
+      if (!lastPlant || Math.hypot(x - lastPlant.x, y - lastPlant.y) > 22){
+        plant(x, y);
+        lastPlant = {x, y};
+      }
+      // fingertip glow (wand)
+      ctx.fillStyle = 'rgba(255,255,255,.8)';
+      ctx.beginPath(); ctx.arc(x, y, 6, 0, 6.28); ctx.fill();
+    } else {
+      lastPlant = null;
+      if (gesture === 'open' && !scattered){ scatter(); scattered = true; }
+    }
+  }
+
+  // update + draw flowers
+  flowers = flowers.filter(f => f.life > 0);
+  flowers.forEach(f => {
+    if (f.falling){
+      f.vy += 0.35; f.x += f.vx; f.y += f.vy; f.rot += f.vx * 0.02;
+      f.life -= 0.012;
+    }
+    drawFlower(f, Math.max(f.life, 0));
+  });
+}
+
+// ---------- Setup ----------
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`
+});
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
+hands.onResults(onResults);
+
+document.getElementById('start').onclick = async (e) => {
+  e.target.style.display = 'none';
+  hint.textContent = 'Loading hand model...';
+  const cam = new Camera(video, {
+    onFrame: async () => { await hands.send({ image: video }); },
+    width: 1280, height: 720
+  });
+  await cam.start();
+  hint.textContent = 'Point with one finger to plant flowers. Open palm to scatter.';
+};
+
+document.getElementById('clear').onclick = () => { flowers = []; };
+
+document.getElementById('photo').onclick = () => {
+  const c = document.createElement('canvas');
+  c.width = canvas.width; c.height = canvas.height;
+  const g = c.getContext('2d');
+  g.translate(c.width, 0); g.scale(-1, 1);          // mirror like the screen
+  g.drawImage(video, 0, 0, c.width, c.height);
+  g.drawImage(canvas, 0, 0);
+  const a = document.createElement('a');
+  a.download = 'flower-garden.png';
+  a.href = c.toDataURL('image/png');
+  a.click();
+};
+</script>
+</body>
+</html>
